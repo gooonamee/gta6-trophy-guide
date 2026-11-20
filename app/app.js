@@ -1,79 +1,84 @@
-import { guides, inferredMissable } from './data/guides.js';
+import { guides } from './data/guides.js';
 
 const root = document.querySelector('#app');
-const storageKey = 'leonida-field-guide-v1';
+const key = 'leonida-field-guide-v1';
 const tiers = ['platinum', 'gold', 'silver', 'bronze'];
-// The supplied list has no hidden flag. These cryptic descriptions are treated as spoiler-sensitive.
-const sensitive = new Set([37, 38, 44, 45, 46, 47, 48, 49, 50]);
+const symbols = { platinum: '✦', gold: '◆', silver: '◆', bronze: '◆' };
 let trophies = [];
 let checked = new Set();
 let revealed = new Set();
-let selected = null;
-let view = 'checklist';
-let tier = 'all';
-let status = 'all';
-let query = '';
-let safe = true;
-let notice = '';
+let state = { tier: 'all', status: 'all', query: '', safe: false, view: 'checklist', selected: null };
 
-try {
-  const saved = JSON.parse(localStorage.getItem(storageKey) || '{}');
-  checked = new Set(Array.isArray(saved.checked) ? saved.checked : []);
-  safe = saved.safe !== false;
-} catch { /* A damaged save starts with a clean tracker. */ }
-
-const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const title = value => value[0].toUpperCase() + value.slice(1);
-const percent = (a, b) => b ? Math.round(a / b * 100) : 0;
-const isHidden = t => safe && sensitive.has(t.id) && !revealed.has(t.id);
-function save() { localStorage.setItem(storageKey, JSON.stringify({checked: [...checked], safe})); }
-function stats(grade) {
-  const items = grade ? trophies.filter(t => t.grade === grade) : trophies;
-  const done = items.filter(t => checked.has(t.id)).length;
-  return { done, total: items.length, pct: percent(done, items.length) };
+try { checked = new Set(JSON.parse(localStorage.getItem(key) || '[]').map(Number)); } catch { checked = new Set(); }
+const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const count = list => list.filter(t => checked.has(t.id)).length;
+const percent = (n, total) => total ? Math.round(n / total * 100) : 0;
+const hidden = t => state.safe && t.id !== 1 && !revealed.has(t.id);
+function save() { localStorage.setItem(key, JSON.stringify([...checked])); }
+function mark(id, value) { value ? checked.add(id) : checked.delete(id); save(); render(); }
+function filtered() {
+  const q = state.query.trim().toLowerCase();
+  return trophies.filter(t => (state.tier === 'all' || t.grade === state.tier) && (state.status === 'all' || (state.status === 'done') === checked.has(t.id)) && (!q || (!hidden(t) && `${t.name} ${t.description}`.toLowerCase().includes(q))));
 }
-function render() {
-  const overall = stats();
-  root.innerHTML = `
-    <header class="topbar"><a class="brand" href="#top" aria-label="Leonida Field Guide home"><span class="brand-mark">L<span>✦</span></span><span>LEONIDA<small>FIELD GUIDE / VOL. 01</small></span></a><nav aria-label="Main navigation"><button class="nav-link ${view === 'checklist' ? 'active' : ''}" data-view="checklist">Trophy guide</button><button class="nav-link ${view === 'roadmap' ? 'active' : ''}" data-view="roadmap">Roadmap</button></nav><div class="top-progress"><span>YOUR PROGRESS</span><strong>${overall.done}<i>/</i>${overall.total}</strong><div class="mini-bar"><b style="width:${overall.pct}%"></b></div></div></header>
-    <main id="top"><section class="hero"><div class="hero-copy"><div class="eyebrow"><span class="dot"></span> THE UNOFFICIAL PLATINUM COMPANION <span class="line"></span> PS5</div><h1>Welcome to<br><em>Leonida.</em></h1><p>The sun, the chaos, the 55 trophies. Your field guide to seeing it all and earning the platinum.</p><div class="hero-actions"><button class="button primary" data-view="checklist">Explore the trophies <span>↗</span></button><button class="button ghost" data-view="roadmap">View the roadmap <span>→</span></button></div></div><div class="hero-art" aria-hidden="true"><div class="sun"></div><div class="sun-lines"></div><div class="palm palm-one">✳</div><div class="palm palm-two">✳</div><div class="art-label">THE LONG ROAD TO PLATINUM <span>✦</span> LEONIDA, USA</div><div class="art-number">01 <span>/ 55</span></div></div><div class="hero-index">A FIELD GUIDE FOR THE AMBITIOUS <span>EST. 2026</span></div></section>
-    <section class="dashboard"><div class="section-kicker">THE BIG PICTURE <span>✦</span> YOUR JOURNEY SO FAR</div><div class="dashboard-grid"><div class="overall"><div class="ring" style="--progress:${overall.pct}%"><div><strong>${overall.pct}<small>%</small></strong><span>COMPLETE</span></div></div><div><span class="overline">PLATINUM PROGRESS</span><h2>${overall.done} <span>/ ${overall.total}</span></h2><p>Trophies collected.<br>The rest is yours for the taking.</p></div></div><div class="tier-stats">${tiers.map(g => {const s=stats(g); return `<div class="tier-stat ${g}"><div class="tier-icon">✦</div><div><strong>${title(g)}</strong><span>${s.done} / ${s.total} earned · ${s.pct}%</span><div class="stat-bar"><b style="width:${s.pct}%"></b></div></div></div>`}).join('')}</div><div class="tracker-actions"><span class="overline">YOUR SAVE DATA</span><p>Progress stays on this device.</p><div><button data-action="export">Export ↗</button><label class="upload">Import ↙<input type="file" accept="application/json,.json" id="import-file"></label><button data-action="reset">Reset</button></div>${notice ? `<small role="status">${escapeHTML(notice)}</small>` : ''}</div></div></section>
-    ${view === 'roadmap' ? roadmap() : checklist()}
-    </main><footer><div><span class="footer-mark">L✦</span> LEONIDA FIELD GUIDE <small>AN UNOFFICIAL COMPANION</small></div><p>Made for the journey, not just the destination. <span>✦</span></p></footer>
-    ${selected !== null ? detail() : ''}`;
-  bind();
+function header() {
+  const done = count(trophies), pct = percent(done, trophies.length);
+  return `<header class="topbar"><a class="brand" href="#" data-action="home"><span class="brand-mark">L<span>✦</span></span><span>LEONIDA <b>FIELD GUIDE</b><small>THE UNOFFICIAL TROPHY COMPANION</small></span></a><nav><button class="nav-link ${state.view === 'checklist' ? 'active' : ''}" data-action="checklist">The checklist</button><button class="nav-link ${state.view === 'roadmap' ? 'active' : ''}" data-action="roadmap">Roadmap</button></nav><div class="top-progress"><span>YOUR PROGRESS</span><strong>${pct}%</strong><div class="mini-track"><i style="width:${pct}%"></i></div></div></header>`;
 }
-function checklist() {
-  const visible = trophies.filter(t => (tier === 'all' || t.grade === tier) && (status === 'all' || (status === 'earned') === checked.has(t.id)) && (!query || (!isHidden(t) && `${t.name} ${t.description}`.toLowerCase().includes(query.toLowerCase()))));
-  return `<section class="content" id="guide"><div class="section-heading"><div><div class="section-kicker">THE COLLECTION <span>✦</span> 01 — 55</div><h2>The trophy list<span>.</span></h2><p>Every milestone, one step closer to legendary.</p></div><div class="list-meta"><strong>${visible.length.toString().padStart(2,'0')}</strong><span> TROPHIES SHOWN</span></div></div><div class="toolbar"><label class="search"><span>⌕</span><input id="search" type="search" placeholder="Search trophies..." value="${escapeHTML(query)}" aria-label="Search trophies"><kbd>/</kbd></label><div class="select-wrap"><label for="tier">TIER</label><select id="tier"><option value="all">All tiers</option>${tiers.map(g=>`<option value="${g}" ${tier===g?'selected':''}>${title(g)}</option>`).join('')}</select></div><div class="select-wrap"><label for="status">STATUS</label><select id="status"><option value="all">All statuses</option><option value="unearned" ${status==='unearned'?'selected':''}>To do</option><option value="earned" ${status==='earned'?'selected':''}>Earned</option></select></div><label class="safe-toggle"><input type="checkbox" id="safe" ${safe?'checked':''}><span class="switch"></span><span>Spoiler safe<small>${safe?'ON':'OFF'}</small></span></label></div><div class="list-caption"><span>CHECK TO TRACK <span>↓</span></span><span>SELECT A TROPHY FOR THE GUIDE <span>↗</span></span></div>${visible.length ? tiers.map(g => {const items=visible.filter(t=>t.grade===g); if(!items.length)return ''; const s=stats(g); return `<div class="group"><div class="group-heading"><div><span class="group-gem ${g}">✦</span><h3>${title(g)}</h3><span class="group-count">${items.length.toString().padStart(2,'0')} SHOWN</span></div><span>${s.done} / ${s.total} EARNED</span></div>${items.map(row).join('')}</div>`}).join('') : '<div class="empty">No trophies match those filters. Try a different search.</div>'}</section>`;
+function summary() {
+  const done = count(trophies), pct = percent(done, trophies.length);
+  return `<section class="summary"><div class="summary-heading"><div><p class="eyebrow"><span class="pulse"></span> YOUR PLATINUM JOURNEY</p><h2>Every legend starts somewhere.</h2><p>Keep track of your road to 100%. Your progress is saved on this device.</p></div><div class="overall"><strong>${done}<span> / ${trophies.length}</span></strong><small>TROPHIES EARNED</small></div></div><div class="progress-line"><i style="width:${pct}%"></i></div><div class="summary-bottom"><span>${pct}% COMPLETE</span><span>${trophies.length - done} TO GO <b>↗</b></span></div><div class="tier-stats">${tiers.map(tier => { const list = trophies.filter(t => t.grade === tier), n = count(list); return `<button class="tier-stat ${state.tier === tier ? 'chosen' : ''}" data-tier="${tier}"><span class="gem ${tier}">${symbols[tier]}</span><span><b>${tier}</b><small>${n} / ${list.length} earned · ${percent(n, list.length)}%</small></span><span class="stat-arrow">↗</span></button>`; }).join('')}</div></section>`;
+}
+function controls() {
+  return `<div class="section-title"><div><p class="eyebrow pink">THE COLLECTION <span> / 01</span></p><h2>Trophy checklist<span class="title-dot">.</span></h2><p>All 55 trophies. One very good reason to explore.</p></div><div class="utility"><button data-action="export">↑ Export</button><label class="upload">↓ Import<input type="file" accept="application/json,.json" id="import-file"></label><button data-action="reset">Reset</button></div></div><div class="filters"><label class="search"><span>⌕</span><input id="search" type="search" placeholder="Search trophies..." value="${esc(state.query)}" aria-label="Search trophies"><kbd>/</kbd></label><label class="select-wrap"><span>RANK</span><select id="tier" aria-label="Filter by tier"><option value="all">All tiers</option>${tiers.map(t => `<option value="${t}" ${state.tier === t ? 'selected' : ''}>${t[0].toUpperCase()+t.slice(1)}</option>`).join('')}</select></label><label class="select-wrap"><span>STATUS</span><select id="status" aria-label="Filter by status"><option value="all">All trophies</option><option value="remaining" ${state.status === 'remaining' ? 'selected' : ''}>To do</option><option value="done" ${state.status === 'done' ? 'selected' : ''}>Earned</option></select></label><label class="spoiler"><input id="safe" type="checkbox" ${state.safe ? 'checked' : ''}><span class="switch"></span><span>Spoiler safe<small>Hide trophy details</small></span></label></div>`;
 }
 function row(t) {
-  const hidden=isHidden(t), done=checked.has(t.id);
-  return `<article class="trophy-row ${done?'done':''}"><label class="check"><input type="checkbox" data-check="${t.id}" ${done?'checked':''} aria-label="Mark ${hidden?'spoiler trophy':escapeHTML(t.name)} earned"><span>✓</span></label><button class="row-main" data-open="${t.id}" ${hidden?'aria-label="Open spoiler trophy"':''}><span class="trophy-symbol ${t.grade}">✦</span><span class="trophy-text ${hidden?'blurred':''}" ${hidden?'aria-hidden="true"':''}><strong>${escapeHTML(t.name)}</strong><small>${escapeHTML(t.description)}</small></span>${hidden?'<span class="hidden-label">SPOILER · REVEAL</span>':''}<span class="row-arrow">↗</span></button></article>`;
+  const isHidden = hidden(t), done = checked.has(t.id);
+  return `<article class="trophy-row ${done ? 'is-done' : ''}"><button class="check ${done ? 'checked' : ''}" data-check="${t.id}" aria-label="${done ? 'Mark incomplete' : 'Mark complete'}: ${isHidden ? 'hidden trophy ' + t.id : esc(t.name)}" aria-pressed="${done}">${done ? '✓' : ''}</button><button class="trophy-main" data-open="${t.id}" ${isHidden ? 'aria-label="Open hidden trophy ' + t.id + '"' : ''}><span class="trophy-icon ${t.grade}">${symbols[t.grade]}</span><span class="trophy-copy" ${isHidden ? 'aria-hidden="true"' : ''}><strong class="${isHidden ? 'blur' : ''}">${esc(t.name)}</strong><small class="${isHidden ? 'blur' : ''}">${esc(t.description)}</small></span><span class="row-tag">${t.grade}</span><span class="row-arrow">↗</span></button></article>`;
 }
-function detail() {
-  const t=trophies.find(x=>x.id===selected); if(!t)return '';
-  const hidden=isHidden(t);
-  return `<div class="modal-backdrop" data-close="true"><aside class="detail" role="dialog" aria-modal="true" aria-label="Trophy guide"><button class="close" data-close="true" aria-label="Close guide">×</button><div class="detail-top"><span class="group-gem ${t.grade}">✦</span><span>${t.grade.toUpperCase()} TROPHY</span><span class="detail-number">NO. ${String(t.id).padStart(2,'0')} / 55</span></div>${hidden?`<div class="detail-hidden"><div>✧</div><h2>Something to discover.</h2><p>This trophy has a cryptic description. Reveal it when you’re ready.</p><button class="button primary" data-reveal="${t.id}">Reveal trophy ↗</button></div>`:`<div class="detail-body"><span class="overline">THE OBJECTIVE</span><h2>${escapeHTML(t.name)}</h2><p class="official">${escapeHTML(t.description)}</p>${inferredMissable.has(t.id)?'<div class="warning">◈ &nbsp; POSSIBLY MISSABLE · INFERENCE<br><small>The description suggests caution; missability is not confirmed.</small></div>':''}<div class="detail-divider"></div><div class="section-kicker">FIELD NOTES <span>✦</span> THE APPROACH</div><h3>How to get there<span>.</span></h3><p class="guide-copy">${escapeHTML(guides[t.id] || 'Guide coming soon.')}</p><div class="note"><span>✳</span><p><strong>FIELD NOTE</strong>These are planning tips based on the trophy wording. Check in-game prompts for exact requirements.</p></div><button class="button ${checked.has(t.id)?'ghost':'primary'} detail-check" data-toggle="${t.id}">${checked.has(t.id)?'✓ &nbsp; Mark as not earned':'✓ &nbsp; Mark as earned'}</button></div>`}</aside></div>`;
+function checklist() {
+  const list = filtered();
+  return `${summary()}${controls()}<div class="list-meta"><span>SHOWING ${list.length} OF ${trophies.length} TROPHIES</span><span>SELECT A TROPHY FOR FIELD NOTES ↓</span></div><div class="trophy-list">${tiers.map(tier => { const group = list.filter(t => t.grade === tier); if (!group.length) return ''; return `<div class="group-heading"><span class="gem ${tier}">${symbols[tier]}</span><strong>${tier}</strong><span>${group.length.toString().padStart(2,'0')}</span><i></i></div>${group.map(row).join('')}`; }).join('') || '<div class="empty">No trophies match these filters. <button class="text-button" data-action="clear">Clear filters →</button></div>'}</div>`;
 }
-function roadmap() {
-  const steps=[['01','THE FIRST MILES','Story first','Follow the main missions through the finale, picking up nearby activities as they unlock. Keep separate saves before major choices and chapter finales; the descriptions do not establish which opportunities can be missed.'],['02','BACK ON THE ROAD','Clean up the map','Return to character strands, races, ranges and partner activities. Finish entire mission chains and track distinct wins. Check the in-game 100% list separately from this trophy checklist.'],['03','LEAVE NO STONE','Collect & explore','Travel region by region for meditation spots, card sets, WAiNK locations, vehicles and unexplored areas. Record each find as you go to avoid a long second lap.'],['04','THE LOOSE ENDS','Miscellaneous & online','Clear combat, robbery, spending and cryptic trophies. The supplied list does not specify online-only trophies; if online activities become relevant, verify their requirements in-game. Save before experimenting with uncertain triggers.'],['05','THE FINAL MILE','Claim the platinum','Compare your remaining trophies against your console, finish the last outstanding objective and let the trophy list sync. The platinum follows the other 54 trophies.']];
-  return `<section class="content roadmap" id="guide"><div class="section-heading"><div><div class="section-kicker">THE GAME PLAN <span>✦</span> FIVE PHASES</div><h2>The road to platinum<span>.</span></h2><p>A little direction for a very big state. Make the journey your own.</p></div><div class="road-sign">55 <span>STOPS<br>ONE DESTINATION</span></div></div><div class="road-intro"><span>✳</span><p><strong>BEFORE YOU HIT THE ROAD</strong> This route is a planning aid based on the supplied trophy descriptions, not a guarantee about unknown game mechanics. Keep backup saves and check in-game requirements as you go.</p></div><div class="road-steps">${steps.map(([n,k,h,p])=>`<article class="road-step"><div class="step-number">${n}</div><div><span class="section-kicker">${k}</span><h3>${h}<span>.</span></h3><p>${p}</p></div><span class="step-arrow">↗</span></article>`).join('')}</div><button class="button primary" data-view="checklist">Back to the trophies ↗</button></section>`;
+const phases = [
+  ['01', 'Get your bearings', 'STORY FIRST', 'Follow the main story through the final mission to open up Leonida. Stock up between jobs, try new activities as they appear, and keep separate saves at major turning points. The finale’s effects on cleanup are not established, so a backup is a sensible precaution.'],
+  ['02', 'Take the scenic route', 'CLEANUP', 'Finish character mission strands and sample every activity type. Work through races, the shooting range and challenges in manageable batches; keep a note of distinct wins and completed strands.'],
+  ['03', 'Leave no stone unturned', 'COLLECTIBLES', 'Sweep the map region by region for meditation spots, cards and WAiNK locations. Combine each trip with exploration and vehicle discovery, recording finds as you go to avoid a second full tour.'],
+  ['04', 'Make some noise', 'ONLINE / MISC', 'Clean up partner actions, robberies, spending and the more cryptic miscellaneous trophies. No trophy in the supplied list explicitly requires online play; check the game’s own requirements before planning a session.'],
+  ['05', 'A Leonida legend', 'PLATINUM', 'Check the in-game 100% completion list, finish any remaining trophy requirements and sync your platform list. Once the other 54 are earned, the platinum is yours.']
+];
+function roadmap() { return `<section class="roadmap-intro"><p class="eyebrow pink">THE GAME PLAN <span> / 02</span></p><h1>The road to <em>legend.</em></h1><p>One state, 55 trophies, countless stories. Here’s a flexible route through it all.</p></section><div class="roadmap-layout"><aside><span class="aside-label">YOUR ITINERARY</span><h3>Five phases.<br>One platinum.</h3><p>There’s no rush. Follow the story, then make Leonida your own.</p><button data-action="checklist">← Back to checklist</button></aside><div class="phases">${phases.map(([n,title,label,body]) => `<article class="phase"><span class="phase-number">${n}</span><div><p class="eyebrow pink">${label}</p><h2>${title}</h2><p>${body}</p></div><span class="phase-star">✦</span></article>`).join('')}</div></div>`; }
+function modal() {
+  const t = trophies.find(x => x.id === state.selected); if (!t) return '';
+  const secret = hidden(t);
+  return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button class="close" data-action="close" aria-label="Close guide">×</button><p class="eyebrow pink">FIELD NOTE <span> / ${String(t.id).padStart(2,'0')}</span></p><div class="modal-title"><span class="trophy-icon large ${t.grade}">${symbols[t.grade]}</span><div><span class="modal-rank">${t.grade} TROPHY</span><h2 id="modal-title" class="${secret ? 'blur' : ''}">${esc(t.name)}</h2></div></div>${secret ? `<div class="secret"><span>✦</span><h3>Spoilers ahead</h3><p>This trophy is hidden while spoiler-safe mode is on.</p><button class="primary" data-action="reveal">Reveal this trophy</button></div>` : `<p class="official">${esc(t.description)}</p><div class="guide-label">THE STRATEGY <span>✳</span></div><p class="guide-text">${esc(guides[t.id] || 'Explore at your own pace and check the in-game requirements.')}</p><p class="note">FIELD NOTE · Strategies and inferred conditions are guidance, not confirmed unlock requirements.</p><button class="primary" data-action="toggle">${checked.has(t.id) ? '✓  Mark as not earned' : '＋  Mark as earned'}</button>`}</section></div>`;
 }
-function bind() {
-  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view; selected=null; render(); document.querySelector('#guide')?.scrollIntoView({behavior:'smooth'});});
-  document.querySelectorAll('[data-check]').forEach(el=>el.onchange=()=>{const id=Number(el.dataset.check); el.checked?checked.add(id):checked.delete(id); save(); render();});
-  document.querySelectorAll('[data-open]').forEach(el=>el.onclick=()=>{selected=Number(el.dataset.open); render(); document.querySelector('.close')?.focus();});
-  document.querySelectorAll('[data-close]').forEach(el=>el.onclick=e=>{if(e.target===el){selected=null;render();}});
-  document.querySelectorAll('[data-reveal]').forEach(el=>el.onclick=()=>{revealed.add(Number(el.dataset.reveal));render();});
-  document.querySelectorAll('[data-toggle]').forEach(el=>el.onclick=()=>{const id=Number(el.dataset.toggle); checked.has(id)?checked.delete(id):checked.add(id);save();render();});
-  const search=document.querySelector('#search'); if(search) search.oninput=e=>{const pos=e.target.selectionStart;query=e.target.value;render();const input=document.querySelector('#search');input.focus();input.setSelectionRange(pos,pos);};
-  const tierEl=document.querySelector('#tier'); if(tierEl) tierEl.onchange=e=>{tier=e.target.value;render();};
-  const statusEl=document.querySelector('#status'); if(statusEl) statusEl.onchange=e=>{status=e.target.value;render();};
-  const safeEl=document.querySelector('#safe'); if(safeEl) safeEl.onchange=e=>{safe=e.target.checked;save();render();};
-  document.querySelector('[data-action="reset"]').onclick=()=>{if(confirm('Reset all trophy progress?')){checked.clear();save();notice='Progress reset.';render();}};
-  document.querySelector('[data-action="export"]').onclick=()=>{const blob=new Blob([JSON.stringify({version:1,checked:[...checked]},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='leonida-progress.json';a.click();URL.revokeObjectURL(url);};
-  document.querySelector('#import-file').onchange=async e=>{try{const data=JSON.parse(await e.target.files[0].text());if(!Array.isArray(data.checked)||data.checked.some(id=>!Number.isInteger(id)||!trophies.some(t=>t.id===id)))throw Error();checked=new Set(data.checked);save();notice='Progress imported.';}catch{notice='Could not import that progress file.';}render();};
-}
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&selected!==null){selected=null;render();}else if(e.key==='/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && view==='checklist'){e.preventDefault();document.querySelector('#search')?.focus();}});
-fetch('./data/trophies.json').then(r=>{if(!r.ok)throw Error();return r.json();}).then(data=>{trophies=data.trophies;checked=new Set([...checked].filter(id=>trophies.some(t=>t.id===id)));render();}).catch(()=>{root.innerHTML='<div class="loading">Could not load the trophy list. Please run the local server and refresh.</div>';});
+function render() { root.innerHTML = `${header()}<main><div class="hero"><div class="hero-copy"><p class="eyebrow"><span class="pulse"></span> YOUR COMPANION TO LEONIDA</p><h1>Platinum,<br><em>mapped out.</em></h1><p>From the first score to the final trophy.<br>Every step of your Leonida story, in one place.</p><div class="hero-actions"><button class="primary" data-action="checklist">EXPLORE THE GUIDE <span>↗</span></button><button class="text-button" data-action="roadmap">VIEW ROADMAP <span>→</span></button></div></div><div class="hero-art" aria-hidden="true"><div class="sun"></div><div class="sun-lines"></div><div class="art-grid"></div><span class="art-cross one">✳</span><span class="art-cross two">✦</span><span class="art-caption">PARADISE IS A WORK IN PROGRESS <b>↗</b></span><span class="art-coordinate">25° 46' N<br>80° 12' W</span></div><div class="hero-index">THE LEONIDA FIELD GUIDE <span>✦</span> VOL. 01</div></div><div class="content">${state.view === 'roadmap' ? roadmap() : checklist()}</div></main><footer><div><span class="footer-logo">L✦</span><strong>LEONIDA FIELD GUIDE</strong><p>An unofficial companion for the journey.</p></div><span>MADE FOR THE LONG WAY AROUND <b>✦</b></span><span>YOUR PROGRESS STAYS WITH YOU</span></footer>${modal()}`; }
+root.addEventListener('click', event => {
+  const check = event.target.closest('[data-check]'); if (check) { const id = Number(check.dataset.check); mark(id, !checked.has(id)); return; }
+  const open = event.target.closest('[data-open]'); if (open) { state.selected = Number(open.dataset.open); render(); return; }
+  const tier = event.target.closest('[data-tier]'); if (tier) { state.tier = state.tier === tier.dataset.tier ? 'all' : tier.dataset.tier; render(); return; }
+  const button = event.target.closest('[data-action]'); if (!button) return;
+  const action = button.dataset.action;
+  if (action === 'backdrop' && event.target !== button) return;
+  if (action === 'close' || action === 'backdrop') state.selected = null;
+  if (action === 'reveal') revealed.add(state.selected);
+  if (action === 'toggle') { mark(state.selected, !checked.has(state.selected)); return; }
+  if (action === 'checklist' || action === 'home') { event.preventDefault(); state.view = 'checklist'; }
+  if (action === 'roadmap') state.view = 'roadmap';
+  if (action === 'clear') { state.tier = 'all'; state.status = 'all'; state.query = ''; }
+  if (action === 'reset' && confirm('Reset all trophy progress on this device?')) { checked.clear(); save(); }
+  if (action === 'export') { const blob = new Blob([JSON.stringify({ version: 1, checked: [...checked] }, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'leonida-progress.json'; a.click(); URL.revokeObjectURL(url); }
+  render();
+  if (action === 'checklist' || action === 'roadmap') document.querySelector('.content').scrollIntoView({ behavior: 'smooth' });
+});
+root.addEventListener('change', async event => {
+  const target = event.target;
+  if (target.id === 'tier') state.tier = target.value;
+  if (target.id === 'status') state.status = target.value;
+  if (target.id === 'safe') state.safe = target.checked;
+  if (target.id === 'import-file' && target.files[0]) { try { const data = JSON.parse(await target.files[0].text()); if (!Array.isArray(data.checked) || data.checked.some(id => !Number.isInteger(id) || !trophies.some(t => t.id === id))) throw Error('Invalid trophy IDs'); checked = new Set(data.checked); save(); } catch { alert('Could not import progress. Choose a valid Leonida progress export.'); } }
+  render();
+});
+root.addEventListener('input', event => { if (event.target.id === 'search') { const pos = event.target.selectionStart; state.query = event.target.value; render(); const input = document.querySelector('#search'); input.focus(); input.setSelectionRange(pos, pos); } });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && state.selected) { state.selected = null; render(); } if (event.key === '/' && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName) && state.view === 'checklist') { event.preventDefault(); document.querySelector('#search')?.focus(); } });
+fetch('./data/trophies.json').then(response => { if (!response.ok) throw Error('Unable to load trophy data'); return response.json(); }).then(data => { trophies = data.trophies; checked = new Set([...checked].filter(id => trophies.some(t => t.id === id))); render(); }).catch(() => { root.innerHTML = '<div class="loading">Could not load the trophy list. Please run the guide through a local web server and refresh.</div>'; });
